@@ -158,7 +158,7 @@ export default function RegisterPanel({ term, termLabel, sections, planSections,
               Save diagnostics
             </Button>
           </div>
-          <Notice>Registration only works while your registration window is open. The Banner steps haven't been exercised against an open registration yet, so run the dry run first. Automating registration may be against university rules — you're responsible for what you submit.</Notice>
+          <Notice>Registration only works while your registration window is open. Signing in, choosing the term and adding CRNs are verified on KFUPM's live Banner; always confirm the final result in Banner's summary. Automating registration may be against university rules — you're responsible for what you submit.</Notice>
         </div>
       </section>
 

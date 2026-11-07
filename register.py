@@ -251,32 +251,81 @@ def add_crn(page: Page, crn: str) -> None:
     page.wait_for_timeout(900)  # Banner validates asynchronously
 
 
-def mark_drop(page: Page, crn: str) -> None:
-    """In the registration summary, set the row for an already-registered CRN to 'Drop'.
+def _summary_row(page: Page, crn: str):
+    """The summary row whose CRN column is exactly `crn` (falls back to any row mentioning it)."""
+    exact = page.locator(f"#summaryBody tr:has(td[data-property='courseReferenceNumber']:text-is('{crn}'))").first
+    try:
+        exact.wait_for(state="visible", timeout=STEP_TIMEOUT)
+        return exact
+    except PWTimeout:
+        row = page.locator("#summaryBody tr, table[id*='summary' i] tbody tr").filter(has_text=crn).first
+        row.wait_for(state="visible", timeout=5_000)
+        return row
 
-    Nothing is saved until the final Submit. Untested against a live KFUPM session (registration
-    was closed while this was written), so this stays behind --allow-drop and a typed YES.
+
+def _chosen_action(page: Page, crn: str) -> str | None:
+    """Text of the option currently selected in the row's Action dropdown (e.g. 'None', 'WEB DROP')."""
+    return page.evaluate(
+        "crn => { const s = document.getElementById(`action-${crn}-ddl`);"
+        " return s && s.selectedIndex >= 0 ? s.options[s.selectedIndex].text : null; }",
+        crn,
+    )
+
+
+def mark_drop(page: Page, crn: str) -> None:
+    """Set the summary row of an already-registered CRN to KFUPM's 'WEB DROP' action.
+
+    Real KFUPM markup: a select2 dropdown #s2id_action-<CRN>-ddl over <select id="action-<CRN>-ddl">
+    with options None / WEB DROP. Nothing is saved until Submit.
     """
-    row = page.locator("#summaryBody tr, table[id*='summary' i] tbody tr").filter(has_text=crn).first
-    row.wait_for(state="visible", timeout=STEP_TIMEOUT)
-    choice = row.locator("a.select2-choice, .select2-container a, select").first
-    choice.click()
-    option = page.locator(".select2-results li, .select2-result-label").filter(has_text=re.compile(r"drop", re.I)).first
-    option.wait_for(state="visible", timeout=STEP_TIMEOUT)
-    option.click()
-    page.wait_for_timeout(600)
+    row = _summary_row(page, crn)
+    try:
+        trigger = page.locator(f"#s2id_action-{crn}-ddl a.select2-choice")
+        (trigger if trigger.count() else row.locator("a.select2-choice").first).click()
+        option = page.locator(".select2-drop-active .select2-results li, .select2-results li").filter(has_text=re.compile(r"\bdrop\b", re.I)).first
+        option.wait_for(state="visible", timeout=STEP_TIMEOUT)
+        option.click()
+        page.wait_for_timeout(500)
+    except Exception:  # noqa: BLE001 - fall through to the direct method below
+        pass
+    if "drop" not in (_chosen_action(page, crn) or "").lower():
+        # set Banner's own <select> and fire the change event its scripts listen for
+        page.evaluate(
+            "crn => { const s = document.getElementById(`action-${crn}-ddl`); if (!s) return;"
+            " const o = [...s.options].find(o => /drop/i.test(o.text)); if (!o) return; s.value = o.value;"
+            " if (window.jQuery) window.jQuery(s).trigger('change'); else s.dispatchEvent(new Event('change', {bubbles: true})); }",
+            crn,
+        )
+        page.wait_for_timeout(400)
+    chosen = _chosen_action(page, crn)
+    if chosen is not None and "drop" not in chosen.lower():
+        raise RuntimeError(f"could not set CRN {crn} to WEB DROP (still '{chosen}')")
 
 
 def read_summary(page: Page) -> dict[str, str]:
-    """Return {crn: row text} for rows currently in the registration summary."""
+    """{crn: 'STATUS | row text'} read from Banner's own summary columns (CRN + Status cells)."""
     rows: dict[str, str] = {}
-    for sel in ("#summaryBody tr", "#summaryBody .ui-widget-content", "table[id*='summary' i] tbody tr"):
+    try:
+        data = page.evaluate(
+            """() => [...document.querySelectorAll('#summaryBody tr')].map(tr => {
+                 const cell = p => ((tr.querySelector(`td[data-property="${p}"]`) || {}).innerText || '').trim();
+                 return {crn: cell('courseReferenceNumber'), status: cell('status'), text: tr.innerText.replace(/\\s+/g, ' ').trim()};
+               })"""
+        )
+        for r in data:
+            if re.fullmatch(r"\d{4,6}", r["crn"]):
+                rows[r["crn"]] = f'{r["status"] or "?"} | {r["text"]}'
+    except Exception:  # noqa: BLE001
+        pass
+    if rows:
+        return rows
+    for sel in ("#summaryBody tr", "table[id*='summary' i] tbody tr"):  # fallback: older layouts
         try:
             for t in page.locator(sel).all_inner_texts():
                 t = " ".join(t.split())
-                m = re.search(r"\b(\d{4,6})\b", t)
+                m = re.search(r"\b(\d{5})\b", t)
                 if m:
-                    rows[m.group(1)] = t
+                    rows[m.group(1)] = f"? | {t}"
             if rows:
                 break
         except Exception:  # noqa: BLE001
@@ -284,17 +333,31 @@ def read_summary(page: Page) -> dict[str, str]:
     return rows
 
 
-def classify(row_text: str | None, crn: str, messages: list[str]) -> tuple[bool, str]:
-    if row_text is None:
-        related = [m for m in messages if crn in m]
+ERROR_WORDS = ("error", "closed", "conflict", "full", "restriction", "prerequisite", "fail", "not allowed", "not available", "time ticket", "hold", "maximum", "corequisite", "link")
+
+
+def classify(row: str | None, crn: str, messages: list[str]) -> tuple[bool, str]:
+    """Did adding `crn` work? Uses Banner's Status column first, then its notifications."""
+    related = [m for m in messages if crn in m]
+    dup = next((m for m in related if "duplicate" in m.lower() and "registration" in m.lower()), None)
+    if dup:
+        return True, f"already registered ({dup})"
+    if row is None:
         return False, related[0] if related else "CRN did not appear in the summary (invalid or rejected)"
-    low = row_text.lower()
-    if any(w in low for w in ("error", "closed", "conflict", "full", "restriction", "prerequisite", "fail", "not ")):
-        if "registered" not in low or "not registered" in low:
-            return False, row_text
-    if "registered" in low:
-        return True, row_text
-    return True, row_text  # pending/“Web Registered” etc.
+    status = row.split(" | ", 1)[0].lower()
+    reason = related[0] if related else row.split(" | ", 1)[0]
+    if "error" in status or "deleted" in status:
+        return False, reason
+    if related and any(w in related[0].lower() for w in ERROR_WORDS):
+        return False, related[0]
+    if "registered" in status and "not" not in status:
+        return True, row.split(" | ", 1)[0]
+    if "pending" in status or status == "?":
+        low = row.lower()
+        if any(w in low for w in ERROR_WORDS) and "registered" not in low:
+            return False, reason
+        return True, row.split(" | ", 1)[0]
+    return True, row.split(" | ", 1)[0]
 
 
 # ---------------------------------------------------------------- main
@@ -319,27 +382,28 @@ def _ready_page(page: Page, base: str) -> None:
 
 
 def tick_conditional_add_drop(page: Page, log: Log) -> bool:
-    """Banner's "Conditional Add and Drop" (if KFUPM enables it) cancels the drops when an add fails."""
-    for sel in ("input#conditionalAddDrop", "input[name*='conditional' i]", "label:has-text('Conditional Add and Drop') input"):
-        try:
-            box = page.locator(sel).first
-            if box.count() and box.is_visible():
-                if not box.is_checked():
-                    box.check()
-                log("  conditional add/drop: ON (Banner will undo the drop if the add fails)")
-                return True
-        except Exception:  # noqa: BLE001
-            continue
-    try:
-        label = page.get_by_text(re.compile("conditional add and drop", re.I)).first
-        if label.count() and label.is_visible():
-            label.click()
-            log("  conditional add/drop: ON (via its label)")
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-    log("  conditional add/drop: not offered - the app will verify and re-add if needed")
-    return False
+    """Tick Banner's "Conditional Add and Drop" (KFUPM: <input id="conditionalAddDrop"> in the footer, drawn
+    as a custom box so the input itself can be invisible). It makes Banner undo a drop if the add fails."""
+    box = page.locator("#conditionalAddDrop, input[name*='conditional' i]").first
+    if box.count() == 0:
+        log("  conditional add/drop: not offered - the app will verify and re-add if needed")
+        return False
+    if not box.is_checked():
+        for attempt in (
+            lambda: box.check(timeout=3000),
+            lambda: page.locator("label[for='conditionalAddDrop']").first.click(timeout=3000),
+            lambda: box.check(force=True, timeout=3000),
+            lambda: page.evaluate("() => { const b = document.getElementById('conditionalAddDrop'); if (b && !b.checked) b.click(); }"),
+        ):
+            try:
+                attempt()
+            except Exception:  # noqa: BLE001
+                pass
+            if box.is_checked():
+                break
+    ok = box.is_checked()
+    log("  conditional add/drop: ON (Banner will undo the drop if the add fails)" if ok else "  conditional add/drop: could NOT be ticked - the app will verify and re-add if needed")
+    return ok
 
 
 def _submit_and_read(page: Page, log: Log) -> tuple[dict[str, str], list[str]]:
@@ -355,8 +419,8 @@ def _still_registered(row: str | None) -> bool:
     """After a submit: is this (previously registered) CRN still registered?"""
     if row is None:
         return False  # gone from the summary = dropped
-    low = row.lower()
-    return "registered" in low and "drop" not in low
+    status = row.split(" | ", 1)[0].lower()
+    return "registered" in status and "drop" not in status and "delete" not in status
 
 
 def _register_once(page: Page, base: str, add: list[str], drop: list[str], dry: bool, log: Log) -> dict:
