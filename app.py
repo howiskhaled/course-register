@@ -271,6 +271,9 @@ class App:
                 z.writestr(f"jobs/{job.kind}-{job.id}.txt", "\n".join(job.lines))
             if paths.LOG_FILE.exists():
                 z.write(paths.LOG_FILE, "registration_log.txt")
+            window_log = APP_HOME / "window.log"
+            if window_log.exists():
+                z.write(window_log, "window.log")
             if paths.DEBUG_DIR.exists():
                 shots = sorted((p for p in paths.DEBUG_DIR.iterdir() if p.is_file()), key=lambda p: p.stat().st_mtime)[-60:]
                 for p in shots:
@@ -697,6 +700,108 @@ def ensure_data() -> None:
         shutil.copy2(f, DATA / f.name)
 
 
+WINDOW_LOG = APP_HOME / "window.log"
+
+
+def _window_log(msg: str) -> None:
+    """Why the native window did or didn't open (included in diagnostics)."""
+    try:
+        with WINDOW_LOG.open("a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except OSError:
+        pass
+
+
+def _unblock_own_files() -> None:
+    """Windows marks files unzipped from a download as "from the internet" (Zone.Identifier).
+    .NET then refuses to load the app's own DLLs, and the native window can't start.
+    Remove that mark from the app's own folder - the same as Properties -> Unblock."""
+    if sys.platform != "win32" or not paths.FROZEN:
+        return
+    root = Path(sys.executable).resolve().parent
+    n = 0
+    for p in root.rglob("*"):
+        if p.suffix.lower() in (".dll", ".exe", ".pyd"):
+            try:
+                os.remove(str(p) + ":Zone.Identifier")
+                n += 1
+            except OSError:
+                pass
+    if n:
+        _window_log(f"unblocked {n} downloaded files")
+
+
+def native_window(app: "App", url: str) -> bool:
+    """Open the app in its own window (pywebview). Returns False if that isn't possible."""
+    try:
+        _unblock_own_files()
+        import webview  # type: ignore
+
+        if sys.platform == "darwin":
+            # dark title bar to match the UI, regardless of the system appearance
+            try:
+                import AppKit  # type: ignore  (comes with pywebview's pyobjc)
+
+                AppKit.NSApplication.sharedApplication().setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua))
+            except Exception:  # noqa: BLE001
+                pass
+
+        win = webview.create_window(
+            paths.APP_NAME,
+            url,
+            width=1440,
+            height=900,
+            min_size=(1100, 700),
+            background_color="#0A0A0A",
+            text_select=True,
+        )
+        selftest = os.environ.get("KFUPM_WINDOW_SELFTEST")
+        if selftest:  # CI: prove the real window opened and loaded the app, then close it
+
+            def done() -> None:
+                title = win.evaluate_js("document.title")
+                Path(selftest).write_text(f"ok {getattr(webview, 'renderer', '?')} {title}", encoding="utf-8")
+                win.destroy()
+
+            win.events.loaded += done
+        # Windows: insist on the modern Edge (WebView2) engine; the old IE engine can't run this UI
+        gui = "edgechromium" if sys.platform == "win32" else None
+        # private_mode=False + a storage path keep the window's browser storage between launches
+        webview.start(gui=gui, private_mode=False, storage_path=str(APP_HOME / "webview"))
+        _window_log(f"native window closed ({getattr(webview, 'renderer', '?')})")
+        return True
+    except Exception as exc:  # noqa: BLE001  (ImportError, missing WebView2, .NET load errors, ...)
+        import traceback
+
+        _window_log("native window unavailable:\n" + traceback.format_exc())
+        print(f"  (native window unavailable: {exc})")
+        return False
+
+
+def edge_app_window(url: str) -> bool:
+    """Windows fallback: Microsoft Edge in app mode - its own window with no tabs or address bar."""
+    candidates = [
+        Path(os.environ.get(v, "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+        for v in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")
+        if os.environ.get(v)
+    ]
+    edge = next((c for c in candidates if c.is_file()), None)
+    if not edge:
+        _window_log("Edge not found; using the default browser")
+        return False
+    try:
+        # a profile of its own, so this is a separate Edge process we can wait for
+        proc = subprocess.Popen(
+            [str(edge), f"--app={url}", f"--user-data-dir={APP_HOME / 'edge-window'}", "--no-first-run", "--no-default-browser-check", "--window-size=1440,900"]
+        )
+        _window_log("opened in Edge app mode")
+        proc.wait()
+        return True
+    except OSError as exc:
+        _window_log(f"Edge app mode failed: {exc}")
+        return False
+
+
 def main() -> int:
     if len(sys.argv) > 2 and sys.argv[1] == "--run":
         return run_subcommand(sys.argv[2:])
@@ -719,41 +824,14 @@ def main() -> int:
     if not DIST.exists():
         print("  ! the built UI is missing - run: cd frontend && npm install && npm run build")
 
-    if args.no_window:
-        window = None
-    elif not args.browser:
-        try:
-            import webview  # type: ignore
-
-            if sys.platform == "darwin":
-                # dark title bar to match the UI, regardless of the system appearance
-                try:
-                    import AppKit  # type: ignore  (comes with pywebview's pyobjc)
-
-                    AppKit.NSApplication.sharedApplication().setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua))
-                except Exception:  # noqa: BLE001
-                    pass
-
-            webview.create_window(
-                paths.APP_NAME,
-                url,
-                width=1440,
-                height=900,
-                min_size=(1100, 700),
-                background_color="#0A0A0A",
-                text_select=True,
-            )
-            # private_mode=False + a storage path keep the window's browser storage between launches
-            webview.start(private_mode=False, storage_path=str(APP_HOME / "webview"))
+    if not args.no_window:
+        opened = False if args.browser else native_window(app, url)
+        if not opened and sys.platform == "win32":
+            opened = edge_app_window(url)  # blocks until that window is closed
+        if opened:
             app.auto.stop("App closed")
             app.radar.shutdown()
             return 0
-        except ImportError:
-            window = None
-        except Exception as exc:  # noqa: BLE001
-            print(f"  (native window unavailable: {exc}; using the browser)")
-            window = None
-    if not args.no_window:
         webbrowser.open(url)
     try:
         while True:

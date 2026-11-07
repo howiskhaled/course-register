@@ -96,6 +96,35 @@ jobs:
           Stop-Process -Id $app.Id -Force
           Write-Host "SMOKE TEST PASSED"
 
+      - name: Native window test (WebView2), also as a "downloaded" copy
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:KFUPM_APP_HOME = Join-Path $env:RUNNER_TEMP "kfupm-home-window"
+          function Test-Window($exe, $label) {
+            $flag = Join-Path $env:RUNNER_TEMP "window-$label.txt"
+            Remove-Item $flag -ErrorAction SilentlyContinue
+            $env:KFUPM_WINDOW_SELFTEST = $flag
+            $p = Start-Process -FilePath $exe -ArgumentList "--port","8770" -PassThru
+            for ($i = 0; $i -lt 90 -and -not (Test-Path $flag); $i++) { Start-Sleep -Seconds 1 }
+            Start-Sleep -Seconds 2
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+            Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { "$($_.CommandLine)" -like "*edge-window*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            $log = Join-Path $env:KFUPM_APP_HOME "window.log"
+            if (Test-Path $log) { Write-Host "--- window.log ($label)"; Get-Content $log }
+            $res = if (Test-Path $flag) { Get-Content $flag -Raw } else { "" }
+            Write-Host "$label -> $res"
+            if ($res -notmatch "^ok edgechromium KFUPM Planner") { throw "$label : native window did not open with WebView2" }
+          }
+          Test-Window (Resolve-Path "release\KFUPM Planner\KFUPM Planner.exe") "build"
+
+          # same app, but every file marked "downloaded from the internet" like an unzipped download
+          $copy = Join-Path $env:RUNNER_TEMP "downloaded\KFUPM Planner"
+          Copy-Item "release\KFUPM Planner" -Destination $copy -Recurse
+          Get-ChildItem $copy -Recurse -File | ForEach-Object { Set-Content -Path $_.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" }
+          Test-Window (Join-Path $copy "KFUPM Planner.exe") "downloaded"
+          Write-Host "NATIVE WINDOW TEST PASSED"
+
       - name: Installer (Inno Setup)
         shell: pwsh
         run: |
