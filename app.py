@@ -552,8 +552,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._err(400, "sign in first")
             if a.jobs.active():
                 return self._err(409, "another task is running")
+            start_at = b.get("startAt")
+            if start_at is not None:
+                try:
+                    start_at = float(start_at)
+                except (TypeError, ValueError):
+                    return self._err(400, "bad start time")
+                if not (time.time() - 60 < start_at < time.time() + 8 * 86400):
+                    return self._err(400, "start time must be within the next week")
             try:
-                a.auto.arm(term, targets, bool(b.get("dry")), bool(b.get("allowDrop")), int(b.get("interval", 10)), bool(b.get("headed", a.settings["headed"])))
+                a.auto.arm(term, targets, bool(b.get("dry")), bool(b.get("allowDrop")), int(b.get("interval", 10)), bool(b.get("headed", a.settings["headed"])), start_at)
             except RuntimeError as exc:
                 return self._err(409, str(exc))
             return self._json(a.auto.snapshot())

@@ -86,6 +86,8 @@ export default function App() {
       return;
     }
     setCurrent([...new Set([...current.filter((c) => !(ev.dropped || []).includes(c)), ...ev.crns])]);
+    // a section you traded away is no longer wanted: take it out of the plan too, so it isn't re-added later
+    if (ev.dropped?.length) setCrns((p) => p.filter((c) => !ev.dropped.includes(c)));
     const name = (c) => {
       const s = byCrnRef.current.get(c);
       return s ? `${s.course}-${s.section}` : `CRN ${c}`;

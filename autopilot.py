@@ -9,7 +9,7 @@ How it works
   * When targets show free seats, all of them go to the registrar in one submission.
   * Registered -> done. "Closed/full" again -> keep waiting (max 5 attempts per section).
     Anything else (prerequisite, restriction, hold) -> stop on that section and show why.
-  * Optional: drop the section a target replaces, in the same submission.
+  * Optional: drop the sections a target is traded for (any course), in the same submission.
   * Rehearsal: does every step except Submit.
 """
 from __future__ import annotations
@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 import paths
 
 MAX_ATTEMPTS = 5
+SIGN_IN_LEAD = 180  # with "Start at": sign in this many seconds early so it's ready on time
 FINAL = ("registered", "rehearsed", "failed")
 
 
@@ -44,6 +45,7 @@ class AutoPilot:
         self.lines: list[str] = []
         self._secrets: list[str] = []
         self._caffeinate: subprocess.Popen | None = None
+        self._timer: threading.Timer | None = None
         d = self._d
         if d["armed"]:  # never silently resume after a restart
             d["armed"] = False
@@ -63,6 +65,7 @@ class AutoPilot:
         d.setdefault("targets", [])
         d.setdefault("startedAt", None)
         d.setdefault("endedReason", None)
+        d.setdefault("startAt", None)
         return d
 
     def _phone(self, text: str) -> None:
@@ -117,6 +120,7 @@ class AutoPilot:
                 "dry": d["dry"],
                 "allowDrop": d["allowDrop"],
                 "startedAt": d["startedAt"],
+                "startAt": d["startAt"],
                 "endedReason": d["endedReason"],
                 "registrar": self.registrar,
                 "detail": self.detail,
@@ -129,12 +133,14 @@ class AutoPilot:
         return bool(self._d["armed"])
 
     # ------------------------------------------------------------ control
-    def arm(self, term: str, targets: list[dict], dry: bool, allow_drop: bool, interval: int, headed: bool) -> None:
+    def arm(self, term: str, targets: list[dict], dry: bool, allow_drop: bool, interval: int, headed: bool, start_at: float | None = None) -> None:
         with self.lock:
             if self.armed:
                 raise RuntimeError("Auto-register is already running")
+            if start_at and start_at <= time.time() + 1:
+                start_at = None
             d = self._d
-            d.update(armed=True, term=term, dry=dry, allowDrop=allow_drop, startedAt=now_iso(), endedReason=None)
+            d.update(armed=True, term=term, dry=dry, allowDrop=allow_drop, startedAt=now_iso(), endedReason=None, startAt=start_at)
             d["targets"] = [
                 {
                     "crn": t["crn"],
@@ -152,14 +158,34 @@ class AutoPilot:
             ]
             self.lines = []
             self.app.state.save()
+        self._keep_awake(True)
+        if start_at:
+            wait = max(0.0, start_at - SIGN_IN_LEAD - time.time())
+            self.registrar = "scheduled"
+            self.detail = None
+            when = datetime.fromtimestamp(start_at).strftime("%a %H:%M")
+            self._log(f"[auto] scheduled: signs in a few minutes before {when}, then starts")
+            self._timer = threading.Timer(wait, self._go, args=(term, targets, interval, headed, start_at))
+            self._timer.daemon = True
+            self._timer.start()
+            self._phone(f"Auto-register {'rehearsal ' if dry else ''}scheduled for {when} ({len(targets)} section(s)). Keep the app open.")
+            self._emit()
+            return
+        self._go(term, targets, interval, headed, None)
+
+    def _go(self, term: str, targets: list[dict], interval: int, headed: bool, start_at: float | None) -> None:
+        with self.lock:
+            self._timer = None
+            if not self.armed:
+                return
+        dry = self._d["dry"]
         radar = self.app.radar
         for t in self._d["targets"]:
             radar.add_watch(term, t["crn"], t["subject"], t["number"], t["label"])
         radar.set_interval(interval)
         radar.on_pass = self.on_pass
         radar.start()
-        self._start_registrar(term, headed)
-        self._keep_awake(True)
+        self._start_registrar(term, headed, start_at)
         radar.check_now()
         self._phone(f"Auto-register {'rehearsal ' if dry else ''}started for {len(targets)} section(s). I'll message you when something happens.")
         self._emit()
@@ -177,6 +203,9 @@ class AutoPilot:
             self.inflight = None
             self.app.state.save()
             proc, self.proc = self.proc, None
+            timer, self._timer = self._timer, None
+        if timer:
+            timer.cancel()
         for t in self._d["targets"]:
             self.app.radar.remove_watch(self._d["term"], t["crn"])
         if proc:
@@ -194,9 +223,11 @@ class AutoPilot:
         self._emit()
 
     # ------------------------------------------------------------ registrar process
-    def _start_registrar(self, term: str, headed: bool) -> None:
+    def _start_registrar(self, term: str, headed: bool, open_at: float | None = None) -> None:
         env, self._secrets = self.app.login_env()
         argv = paths.child_cmd("register") + ["--serve", "--term", term, "--log", str(paths.LOG_FILE)] + (["--headed"] if headed else [])
+        if open_at:
+            argv += ["--open-at", str(int(open_at))]
         self.registrar = "signing_in"
         self.detail = None
         self.proc = subprocess.Popen(
@@ -276,9 +307,13 @@ class AutoPilot:
             d = self._d
             if not d["armed"] or self.registrar != "ready" or self.inflight or not self.proc:
                 return
-            batch = [t for t in d["targets"] if t["status"] == "open"]
-            if not batch:
+            ready = [t for t in d["targets"] if t["status"] == "open"]
+            if not ready:
                 return
+            # Plain adds go together. A target that drops something goes in a submission of its own, so
+            # Conditional Add and Drop ties each drop to exactly the section it was traded for.
+            plain = [t for t in ready if not (d["allowDrop"] and t["drops"])]
+            batch = plain or ready[:1]
             cmd = {
                 "id": secrets.token_hex(4),
                 "cmd": "register",
@@ -330,7 +365,12 @@ class AutoPilot:
             done = all(t["status"] in FINAL for t in d["targets"])
             self.app.state.save()
             term = d["term"]
-            dropped = sent["drop"] if (ev.get("submitted") and registered) else []
+            if not (ev.get("submitted") and registered):
+                dropped = []
+            elif isinstance(ev.get("dropped"), list):
+                dropped = [c for c in ev["dropped"] if c in sent["drop"]]
+            else:
+                dropped = sent["drop"]
         for t in self._d["targets"]:
             if t["status"] in FINAL:
                 self.app.radar.remove_watch(term, t["crn"])

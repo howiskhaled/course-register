@@ -445,6 +445,7 @@ def _register_once(page: Page, base: str, add: list[str], drop: list[str], dry: 
     submitted = False
     restored: list[str] = []
     lost: list[str] = []
+    dropped: list[str] = []
     if dry:
         if drop:
             tick_conditional_add_drop(page, log)
@@ -461,6 +462,8 @@ def _register_once(page: Page, base: str, add: list[str], drop: list[str], dry: 
             if results[crn][0]:
                 results[crn] = classify(summary.get(crn), crn, messages)
         snapshot(page, "auto-after-submit")
+        # what Banner really dropped (with Conditional Add and Drop it keeps the old one if the add fails)
+        dropped = [c for c in drop if summary and not _still_registered(summary.get(c))]
 
         # Safety net for swaps: the add failed but Banner still dropped the old section -> put it back now.
         if drop and any(not results[c][0] for c in add):
@@ -479,12 +482,14 @@ def _register_once(page: Page, base: str, add: list[str], drop: list[str], dry: 
                     ok, msg = classify(summary2.get(c), c, messages2)
                     (restored if ok else lost).append(c)
                     log(f"  {'restored' if ok else 'COULD NOT RESTORE'} {c}: {msg}")
+                dropped = [c for c in dropped if c not in restored]
 
     # fresh page for the next command (also discards anything left unsubmitted)
     page.goto(f"{base}/ssb/classRegistration/classRegistration", wait_until="domcontentloaded")
     open_enter_crns(page)
     return {
         "submitted": submitted,
+        "dropped": dropped,
         "restored": restored,
         "lost": lost,
         "results": {
@@ -494,14 +499,30 @@ def _register_once(page: Page, base: str, add: list[str], drop: list[str], dry: 
     }
 
 
-def serve(base: str, term: str, user: str, pw: str, headless: bool, log: Log) -> int:
+def _recheck_wait(open_at: float | None) -> float:
+    """How long to wait before checking again whether registration is open.
+
+    Normally every 20 s. Around a scheduled start time (from the app's "Start at") it checks every
+    3 s for the first 3 minutes, so a 9:00 opening is caught within seconds.
+    """
+    if not open_at:
+        return 20
+    now = time.time()
+    if now < open_at - 3:
+        return max(1.0, min(20, open_at - 3 - now))
+    if now < open_at + 180:
+        return 3
+    return 20
+
+
+def serve(base: str, term: str, user: str, pw: str, headless: bool, log: Log, open_at: float | None = None) -> int:
     """Stay signed in and register on command. Used by the app's Auto-register.
 
     stdin  (one JSON per line): {"id": "..", "cmd": "register", "add": [crn..], "drop": [crn..], "dry": bool}
                                 {"cmd": "quit"}
     stdout: lines starting with "@@" are JSON events for the app; everything else is the human log.
             {"event": "status", "state": "signing_in|waiting_window|ready|error", "detail": ".."}
-            {"event": "result", "id": "..", "submitted": bool, "results": {crn: {ok, msg, retry, rehearsal}}}
+            {"event": "result", "id": "..", "submitted": bool, "dropped": [crn..], "results": {crn: {ok, msg, retry, rehearsal}}}
     """
     import queue
     import threading
@@ -539,7 +560,7 @@ def serve(base: str, term: str, user: str, pw: str, headless: bool, log: Log) ->
                     except RegistrationClosed as exc:
                         emit("status", state="waiting_window", detail=str(exc))
                         try:
-                            cmd = q.get(timeout=20)  # re-check every 20 s so the window is caught quickly
+                            cmd = q.get(timeout=_recheck_wait(open_at))
                         except queue.Empty:
                             continue
                         if cmd.get("cmd") == "quit":
@@ -611,6 +632,7 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="do every step except the final Submit")
     ap.add_argument("--headed", action="store_true", help="show the browser (also needed for 2-factor prompts)")
     ap.add_argument("--allow-drop", action="store_true", help="also DROP registered CRNs that are in plan.json 'current' but not in 'crns' (off by default)")
+    ap.add_argument("--open-at", type=float, help="(with --serve) epoch seconds when registration is expected to open; checks every 3 s around then")
     ap.add_argument("--yes", action="store_true", help="skip the 'type YES' confirmation for a real run")
     ap.add_argument("--base", default=os.getenv("BANNER_BASE", DEFAULT_BASE))
     ap.add_argument("--log", default=str(LOG_PATH))
@@ -627,7 +649,7 @@ def main() -> int:
             print("--serve needs --term", file=sys.stderr)
             return 2
         headless = not (args.headed or os.getenv("HEADLESS", "true").lower() == "false")
-        return serve(args.base, args.term, user, pw, headless, log)
+        return serve(args.base, args.term, user, pw, headless, log, args.open_at)
 
     if args.check:
         log(f"=== CHECK (read-only) | user {user} | term {args.term or '(first available)'}")

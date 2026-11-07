@@ -72,7 +72,7 @@ export function Segmented({ options, value, onChange, className, size = "md" }) 
           aria-checked={value === val}
           onClick={() => onChange(val)}
           className={cx(
-            "flex-1 rounded-full font-medium transition-colors",
+            "flex-1 whitespace-nowrap rounded-full font-medium transition-colors",
             size === "sm" ? "h-6 px-2.5 text-[12px]" : "h-7 px-3.5 text-[12.5px]",
             value === val ? "bg-active text-fg" : "text-fg-2 hover:text-fg",
           )}
@@ -84,11 +84,11 @@ export function Segmented({ options, value, onChange, className, size = "md" }) 
   );
 }
 
-export function Check({ checked, onChange, children, className }) {
+export function Check({ checked, onChange, children, className, disabled = false }) {
   return (
-    <label className={cx("flex cursor-default select-none items-center gap-2.5 text-[13px] text-fg-2", className)}>
+    <label className={cx("flex cursor-default select-none items-center gap-2.5 text-[13px] text-fg-2", disabled && "opacity-40", className)}>
       <span className="relative inline-flex">
-        <input type="checkbox" className="peer sr-only" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        <input type="checkbox" className="peer sr-only" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
         <span className="grid h-[15px] w-[15px] place-items-center rounded-[4px] border border-line-2 transition-colors peer-checked:border-fg peer-checked:bg-fg peer-focus-visible:ring-2 peer-focus-visible:ring-line-2">
           <svg viewBox="0 0 12 12" className={cx("h-2.5 w-2.5 text-canvas", checked ? "opacity-100" : "opacity-0")} fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M2.5 6.2l2.3 2.3 4.7-5" />
