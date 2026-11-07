@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import sys
@@ -220,17 +221,17 @@ def normalise(raw: dict) -> dict:
     for f in (raw.get("faculty") or []) + [
         f for mf in raw.get("meetingsFaculty") or [] for f in (mf.get("faculty") or [])
     ]:
-        n = (f.get("displayName") or "").strip()
+        n = html.unescape(f.get("displayName") or "").strip()
         if n and n not in names:
             names.append(n)
     return {
         "crn": raw.get("courseReferenceNumber"),
         "course": f'{raw.get("subject", "")} {raw.get("courseNumber", "")}'.strip(),
         "subject": raw.get("subject"),
-        "subjectName": raw.get("subjectDescription"),
+        "subjectName": html.unescape(raw.get("subjectDescription") or ""),
         "number": raw.get("courseNumber"),
         "section": raw.get("sequenceNumber"),
-        "title": raw.get("courseTitle"),
+        "title": html.unescape(raw.get("courseTitle") or ""),
         "type": raw.get("scheduleTypeDescription"),
         "credits": raw.get("creditHours"),
         "campus": raw.get("campusDescription"),

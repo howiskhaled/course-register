@@ -21,6 +21,19 @@ export async function loadTerms() {
   };
 }
 
+/** Banner sends some text HTML-escaped ("Academic &amp; Professional Communication"). */
+const ENT = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", "#39": "'", nbsp: " " };
+export function decodeEntities(s) {
+  if (!s || !s.includes("&")) return s;
+  return s.replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, e) => {
+    const k = e.toLowerCase();
+    if (ENT[k] !== undefined) return ENT[k];
+    if (k.startsWith("#x")) return String.fromCodePoint(parseInt(k.slice(2), 16));
+    if (k.startsWith("#")) return String.fromCodePoint(parseInt(k.slice(1), 10));
+    return m;
+  });
+}
+
 const termCache = new Map();
 /** Forget downloaded terms (after the app re-scrapes). */
 export function clearTermCache() {
@@ -31,6 +44,14 @@ export async function loadTerm(entry, preloaded) {
   if (!termCache.has(entry.code)) termCache.set(entry.code, getJson(entry.file));
   const doc = await termCache.get(entry.code);
   if (!doc || !Array.isArray(doc.sections)) throw new Error(`${entry.file} has an unexpected shape`);
+  if (!doc._decoded) {
+    for (const s of doc.sections) {
+      s.title = decodeEntities(s.title);
+      s.subjectName = decodeEntities(s.subjectName);
+      s.instructors = (s.instructors || []).map(decodeEntities);
+    }
+    doc._decoded = true;
+  }
   return doc;
 }
 
