@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens - a dark take on the "research lab notebook" reference:
+ * monochrome, hairline structure, pill controls, 6px cards, no shadows, no gradients.
+ * Colour is used only to carry meaning (conflict / open seat / warning), and only as small marks.
+ */
+@theme {
+  --color-canvas: #0a0a0a; /* page */
+  --color-raised: #121212; /* dialogs, menus, log */
+  --color-fg: #ededed; /* primary text, the one filled button */
+  --color-fg-2: #a1a1a1; /* secondary text, labels */
+  --color-fg-3: #6b6b6b; /* tertiary, placeholders */
+  --color-line: rgb(255 255 255 / 0.1); /* hairlines */
+  --color-line-2: rgb(255 255 255 / 0.18); /* hover / focus hairline */
+  --color-hover: rgb(255 255 255 / 0.045);
+  --color-active: rgb(255 255 255 / 0.085);
+  --color-danger: #ff6b6b;
+  --color-ok: #5dd39e;
+  --color-warn: #e6b95c;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.006em;
+  font-feature-settings: "calt" 1, "liga" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: rgb(255 255 255 / 0.22);
+}
+
+/* quiet scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.14) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.12);
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+button {
+  cursor: default;
+}
+
+input[type="time"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  opacity: 0.6;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* hatched fill for sections that will be dropped */
+.hatch {
+  background-image: repeating-linear-gradient(135deg, rgb(255 255 255 / 0.06) 0 6px, transparent 6px 12px);
+}

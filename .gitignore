@@ -1,0 +1,34 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.auth_state.json
+
+# generated (personal or re-creatable)
+registration_log.txt
+plan.json
+radar_state.json
+radar_state.tmp
+courses.json
+data/
+frontend/public/courses.json
+frontend/public/data/
+debug/
+
+# node
+node_modules/
+frontend/dist/
+
+.DS_Store
+
+# app build output
+build/
+release/
+
+# local tooling
+.claude/

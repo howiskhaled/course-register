@@ -1,0 +1,8 @@
+requests>=2.32
+beautifulsoup4>=4.12
+python-dotenv>=1.0
+playwright>=1.48
+keyring>=25
+# optional: a native window instead of your browser (python app.py picks it up automatically)
+# pywebview>=5
+pyobjc-framework-Vision>=10; sys_platform == "darwin"   # screenshot import (on-device text recognition)

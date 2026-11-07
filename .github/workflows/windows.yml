@@ -1,0 +1,117 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build the UI
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt pywebview pyinstaller pillow
+
+      - name: Icon
+        run: python packaging/make_icon.py build/icon-1024.png --ico build/icon.ico
+
+      - name: Build KFUPM Planner.exe
+        run: python -m PyInstaller --noconfirm --clean --log-level WARN --distpath release --workpath build/pyinstaller packaging/kfupm_planner_win.spec
+
+      - name: Smoke test on real Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe  = Resolve-Path "release\KFUPM Planner\KFUPM Planner.exe"
+          $env:KFUPM_APP_HOME = Join-Path $env:RUNNER_TEMP "kfupm-home"   # throwaway profile
+          $base = "http://127.0.0.1:8765"
+
+          # 1) the packaged app starts its local server
+          $app = Start-Process -FilePath $exe -ArgumentList "--no-window","--port","8765" -PassThru
+          $html = $null
+          for ($i = 0; $i -lt 90 -and -not $html; $i++) {
+            Start-Sleep -Seconds 1
+            try { $html = (Invoke-WebRequest "$base/" -UseBasicParsing -TimeoutSec 5).Content } catch {}
+          }
+          if (-not $html) { throw "app server did not start" }
+          $token = [regex]::Match($html, 'app-token" content="([^"]+)').Groups[1].Value
+          if (-not $token) { throw "no app token in page" }
+          $h  = @{ "X-App-Token" = $token }
+          $hp = @{ "X-App-Token" = $token; "Origin" = $base }
+
+          # 2) status, platform, credential store
+          $st = Invoke-RestMethod "$base/api/status" -Headers $h
+          $st | ConvertTo-Json -Depth 6
+          if (-not $st.packaged) { throw "not running as the packaged app" }
+          if ($st.platform -ne "win32") { throw "unexpected platform $($st.platform)" }
+          if ($st.keychainBackend -notmatch "Windows") { throw "no Windows Credential Manager backend: $($st.keychainBackend)" }
+          if ($st.credentials.saved) { throw "a fresh install must start signed out" }
+
+          # 3) save + remove a dummy login in Windows Credential Manager
+          Invoke-RestMethod "$base/api/credentials" -Method Post -Headers $hp -ContentType "application/json" -Body '{"id":"ci-test","password":"ci-only-dummy"}' | Out-Null
+          if (-not (Invoke-RestMethod "$base/api/status" -Headers $h).credentials.saved) { throw "credential save failed" }
+          Invoke-RestMethod "$base/api/credentials" -Method Delete -Headers $hp | Out-Null
+          if ((Invoke-RestMethod "$base/api/status" -Headers $h).credentials.saved) { throw "credential delete failed" }
+
+          # 4) bundled course data is served
+          $terms = Invoke-RestMethod "$base/data/terms.json"
+          if ($terms.terms.Count -lt 1) { throw "no course data bundled" }
+          Write-Host "terms:" ($terms.terms | ForEach-Object { $_.description }) 
+
+          # 5) the app runs its helpers as child processes and reads their output (scraper job)
+          $job = Invoke-RestMethod "$base/api/scrape" -Method Post -Headers $hp -ContentType "application/json" -Body '{"terms":"202630"}'
+          for ($i = 0; $i -lt 180; $i++) {
+            Start-Sleep -Seconds 1
+            $j = Invoke-RestMethod "$base/api/jobs/$($job.id)" -Headers $h
+            if ($j.status -ne "running") { break }
+          }
+          Write-Host "scrape job: $($j.status)"; $j.lines | Select-Object -Last 8 | ForEach-Object { Write-Host "  $_" }
+          if ($j.lines.Count -lt 1) { throw "no output from the helper process (stdio not connected)" }
+
+          # 6) registrar subcommand talks over stdio from a windowed exe (no login -> exits 2 with a message)
+          $o = Join-Path $env:RUNNER_TEMP "out.txt"; $e = Join-Path $env:RUNNER_TEMP "err.txt"
+          $env:KFUPM_ID = ""; $env:KFUPM_PASSWORD = ""
+          $r = Start-Process -FilePath $exe -ArgumentList "--run","register","--serve","--term","202620" -RedirectStandardOutput $o -RedirectStandardError $e -NoNewWindow -Wait -PassThru
+          $msg = (Get-Content $o, $e -Raw -ErrorAction SilentlyContinue) -join ""
+          Write-Host "registrar exit $($r.ExitCode): $msg"
+          if ($msg -notmatch "not set") { throw "registrar output not captured" }
+
+          Stop-Process -Id $app.Id -Force
+          Write-Host "SMOKE TEST PASSED"
+
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc packaging\windows_installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "installer build failed" }
+
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path "release\KFUPM Planner" -DestinationPath "release\KFUPM-Planner-Windows-portable.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KFUPM-Planner-Windows
+          path: |
+            release/KFUPM-Planner-Setup.exe
+            release/KFUPM-Planner-Windows-portable.zip
+          if-no-files-found: error
