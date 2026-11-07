@@ -2,6 +2,29 @@
 
 Scrape KFUPM's section offerings → plan a conflict-free week in the browser → get a Telegram ping when a full section opens → (optionally) let a script do the registration for you.
 
+## Download
+
+Get the latest version from **[Releases](../../releases/latest)**:
+
+| Computer | File | How to open |
+|---|---|---|
+| **Mac** (Apple Silicon: M1/M2/M3/M4) | `KFUPM-Planner-macOS.zip` | Unzip, drag **KFUPM Planner** to Applications, open it. If macOS says it can't check the app: **System Settings → Privacy & Security → Open Anyway** (once). |
+| **Windows** 10/11 | `KFUPM-Planner-Windows-Setup.exe` | Run it (installs just for you, no admin). If you see *"Windows protected your PC"*: **More info → Run anyway**. |
+| **Windows** (no install) | `KFUPM-Planner-Windows-portable.zip` | Unzip anywhere and run `KFUPM Planner.exe`. |
+
+The warnings appear only because the app isn't paid-signed by Apple/Microsoft. Only download it from this repo's Releases page, and you can check the file against `SHA256SUMS.txt` in the same release.
+
+### Is it safe?
+
+* **Your KFUPM password never leaves your computer.** It's stored in the macOS Keychain / Windows Credential Manager and used only to sign in to KFUPM's own login page (`login.kfupm.edu.sa`, `sts.kfupm.edu.sa`) from your machine. There's no server, account or analytics behind this app.
+* The app only talks to KFUPM (and to Telegram if *you* turn on Telegram alerts with your own bot).
+* Its local server listens on `127.0.0.1` only and needs a per-launch token, so websites can't talk to it.
+* Nothing is registered or dropped until you confirm. A current section is only dropped when you swap it for another section of the same course.
+* The source code is all here — anything in the app is built from this repo.
+* Never send your password, `.env` file or diagnostics zip to anyone you don't trust. (The diagnostics zip doesn't contain your password, but it does contain your schedule.)
+
+This is an unofficial student tool, not affiliated with KFUPM. Use it at your own risk and within KFUPM's rules.
+
 ```
 app.py            THE APP  KFUPM Planner.app: planner + register + radar in one native window
 scraper.py        Part 1  Banner 9 class-search scraper (multi-term)  → data/*.json (+ courses.json)
@@ -49,13 +72,13 @@ Why not every 1 second? Signing in to Banner takes ~15 s, so speed comes from be
 
 Your data lives in `~/Library/Application Support/KFUPM Planner/` (plans, radar list, course data, logs). The app's local server listens only on `127.0.0.1` and every request needs a per-launch token, so other websites can't talk to it.
 
-> Registration caveat: the sign-in chain and term selection were verified against the real site; adding/dropping/submitting on an **open** registration hasn't been exercised yet. Run the dry run first.
+> Registration status: sign-in, the "registration not open yet" detection, term selection, the Enter CRNs page and *Add to Summary* were verified live on KFUPM's site; reading the summary, *WEB DROP* and *Conditional Add and Drop* were verified on KFUPM's real pages. The final *Submit* by the app hasn't been exercised on a live registration yet — use *Rehearsal* first.
 
-**Sharing it:** a locally built app opens normally on your own Mac. On other Macs Gatekeeper will warn because it isn't signed — they can right-click → Open once. Removing that warning needs an Apple Developer ID ($99/yr) to sign and notarize. **Windows** (`.exe`) is planned: the same code and `packaging/kfupm_planner.spec` work with PyInstaller on Windows minus the macOS `BUNDLE` step.
+**Sharing it:** a locally built app opens normally on your own Mac. On other Macs Gatekeeper warns because it isn't notarized — **System Settings → Privacy & Security → Open Anyway**. The build is Apple Silicon (arm64) only. Removing the warning needs an Apple Developer ID ($99/yr) to sign and notarize.
 
 ## Windows
 
-Download **`KFUPM-Planner-Setup.exe`** from the latest successful run of the *Windows build* workflow (GitHub → Actions → Windows build → Artifacts), or the portable zip.
+Download **`KFUPM-Planner-Windows-Setup.exe`** (or the portable zip) from **[Releases](../../releases/latest)**. Each build also comes out of the *Windows build* workflow (GitHub → Actions → Artifacts).
 
 1. Run `KFUPM-Planner-Setup.exe`. It installs just for you (no admin rights) and adds a Start-menu and desktop shortcut.
 2. Windows SmartScreen may say *"Windows protected your PC"* because the app isn't code-signed: click **More info → Run anyway**.
@@ -161,7 +184,7 @@ python register.py
 * Exit code is 0 only if everything succeeded. Flags: `--plan`, `--term`, `--check`, `--dry-run`, `--allow-drop`, `--headed`, `--yes`, `--log`.
 * 2-factor: run with `--headed` and approve the prompt; the script waits up to 5 minutes.
 
-> **Honesty note:** the login chain (CAS → ADFS) and term selection were verified with a real login. The "Enter CRNs" page, adding CRNs, drop marking and Submit use Banner 9's standard element ids with text fallbacks and have **not** been exercised yet because registration was closed when this was written. Always run `--dry-run --headed` first and check `debug/` if a step can't find its element.
+> **Honesty note:** the login chain (CAS → ADFS), term selection, the Enter CRNs page and adding CRNs were verified live; summary reading, drop marking and Conditional Add and Drop were verified on KFUPM's real pages. The final Submit hasn't been exercised by the script on a live registration yet. Run `--dry-run --headed` first and check `debug/` if a step can't find its element.
 
 ## Part 4 — Telegram seat radar
 
@@ -183,7 +206,7 @@ python radar.py
 
 ## Sharing this with other students
 
-* **Give them the app**: zip the project (run `cd frontend && npm install && npm run build` first so `frontend/dist` is included, and run `python scraper.py --all-open` so `data/` is included). Students double-click the launcher; no Node needed.
+* **Give them the app**: send them the **[Releases](../../releases/latest)** link (Mac zip, Windows installer, Windows portable zip). To make a new Mac build: `./build_mac.sh`, then `ditto -c -k --keepParent "release/KFUPM Planner.app" KFUPM-Planner-macOS.zip`. Windows builds come from GitHub Actions.
 * **Website option (undecided)**: `frontend/dist` is static — host it anywhere and refresh `data/` with the scraper. It will show only the planner/off-day finder.
 * **The standalone Telegram bot (`radar.py`)** is safe to host once for a group (public data only).
 * **Registration is deliberately local-only**: each student's login stays in their own keychain. Never build a hosted service that collects other students' KFUPM passwords.

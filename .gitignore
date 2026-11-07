@@ -32,3 +32,6 @@ release/
 
 # local tooling
 .claude/
+
+# private demo/video material (never publish)
+packaging/showcase/
