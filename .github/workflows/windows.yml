@@ -97,6 +97,7 @@ jobs:
           Write-Host "SMOKE TEST PASSED"
 
       - name: Native window test (WebView2), also as a "downloaded" copy
+        timeout-minutes: 8
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -122,6 +123,8 @@ jobs:
           $copy = Join-Path $env:RUNNER_TEMP "downloaded\KFUPM Planner"
           Copy-Item "release\KFUPM Planner" -Destination $copy -Recurse
           Get-ChildItem $copy -Recurse -File | ForEach-Object { Set-Content -Path $_.FullName -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" }
+          # a person clicks "Run" on Windows' download warning for the .exe; nobody can click here, so allow just the .exe
+          Remove-Item -Path (Join-Path $copy "KFUPM Planner.exe") -Stream Zone.Identifier
           Test-Window (Join-Path $copy "KFUPM Planner.exe") "downloaded"
           Write-Host "NATIVE WINDOW TEST PASSED"
 
