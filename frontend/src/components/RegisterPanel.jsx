@@ -44,7 +44,8 @@ export default function RegisterPanel({ term, termLabel, sections, planSections,
   const signedIn = !!(creds?.saved || creds?.fromEnvFile);
   const autoArmed = !!app.auto?.armed;
   const running = job?.status === "running" || autoArmed;
-  const wanted = planSections.map((s) => s.crn);
+  // send kept sections as wanted too, so the registrar can only ever drop real swaps (diff.drop)
+  const wanted = [...new Set([...planSections.map((s) => s.crn), ...diff.keep.map((s) => s.crn)])];
   const toAdd = current.length ? diff.add : planSections;
   const drops = allowDrop ? diff.drop : [];
   const isRegisterJob = job?.kind?.startsWith("register");

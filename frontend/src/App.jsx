@@ -113,10 +113,13 @@ export default function App() {
   const diff = useMemo(() => {
     const wanted = new Set(crns);
     const have = new Set(current);
+    // A section you're registered in is only dropped when the plan has ANOTHER section of the same
+    // course and type (a swap, e.g. STAT 201-02 -> 201-08). Everything else you have is kept - never "drop all".
+    const replaced = (c) => !wanted.has(c.crn) && planSections.some((p) => p.course === c.course && p.type === c.type && !have.has(p.crn));
     return {
       add: planSections.filter((s) => !have.has(s.crn)),
-      drop: currentSections.filter((s) => !wanted.has(s.crn)),
-      keep: planSections.filter((s) => have.has(s.crn)),
+      drop: currentSections.filter(replaced),
+      keep: [...planSections.filter((s) => have.has(s.crn)), ...currentSections.filter((c) => !wanted.has(c.crn) && !replaced(c))],
     };
   }, [crns, current, planSections, currentSections]);
 
